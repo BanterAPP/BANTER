@@ -2,7 +2,6 @@ import { supabase } from './supabase'
 
 export class WebRTCManager {
   private userId: string
-  private sub: ReturnType<typeof supabase.channel> | null = null
   private broadcastChannel: ReturnType<typeof supabase.channel> | null = null
   private mediaRecorder: MediaRecorder | null = null
   private stream: MediaStream | null = null
@@ -86,10 +85,7 @@ export class WebRTCManager {
         const buffer = await e.data.arrayBuffer()
         const bytes = new Uint8Array(buffer)
         let binary = ''
-        const chunkSize = 8192
-        for (let i = 0; i < bytes.length; i += chunkSize) {
-          binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
-        }
+        bytes.forEach(b => { binary += String.fromCharCode(b) })
         const base64 = btoa(binary)
 
         this.broadcastChannel?.send({
@@ -124,6 +120,5 @@ export class WebRTCManager {
   disconnectAll() {
     this.stopMic()
     this.broadcastChannel?.unsubscribe()
-    this.sub?.unsubscribe()
   }
 }
