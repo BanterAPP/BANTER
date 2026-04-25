@@ -1,0 +1,109 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #0e0e0e;
+  --surface: #1a1a1a;
+  --surface2: #242424;
+  --border: rgba(255,255,255,0.08);
+  --border2: rgba(255,255,255,0.12);
+  --text: #ffffff;
+  --text-dim: rgba(255,255,255,0.45);
+  --text-mid: rgba(255,255,255,0.7);
+  --grad-main: linear-gradient(135deg, #f7971e 0%, #ff4e50 50%, #c0392b 100%);
+  --grad-green: linear-gradient(135deg, #43e97b, #38f9d7);
+  --accent: #ff4e50;
+  --green: #43e97b;
+  --amber: #f7971e;
+  --sans: 'Plus Jakarta Sans', sans-serif;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  height: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+#__next { height: 100%; height: 100dvh; }
+
+.ptt-btn {
+  position: relative;
+  width: 160px; height: 160px; border-radius: 50%;
+  border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  flex-direction: column; gap: 8px;
+  user-select: none; -webkit-user-select: none;
+  outline: none; touch-action: none;
+  transition: transform 0.15s cubic-bezier(.4,0,.2,1), box-shadow 0.15s;
+  background: var(--grad-main);
+  box-shadow: 0 12px 50px rgba(255,78,80,0.4), 0 4px 20px rgba(247,151,30,0.2);
+}
+.ptt-ring1 {
+  position: absolute; inset: -12px; border-radius: 50%;
+  border: 1.5px solid rgba(255,78,80,0.25); transition: all 0.3s; pointer-events: none;
+}
+.ptt-ring2 {
+  position: absolute; inset: -24px; border-radius: 50%;
+  border: 1px solid rgba(255,78,80,0.12); transition: all 0.3s; pointer-events: none;
+}
+.ptt-btn.speaking {
+  transform: scale(0.96);
+  box-shadow: 0 8px 60px rgba(67,233,123,0.5), 0 4px 30px rgba(67,233,123,0.3);
+  background: var(--grad-green);
+  animation: ptt-pulse 1.2s ease-in-out infinite;
+}
+.ptt-btn.speaking .ptt-ring1 { border-color: rgba(67,233,123,0.4); inset: -14px; animation: ring-expand 1.2s ease-in-out infinite; }
+.ptt-btn.speaking .ptt-ring2 { border-color: rgba(67,233,123,0.2); inset: -28px; animation: ring-expand 1.2s ease-in-out infinite 0.2s; }
+.ptt-btn.blocked  { background: var(--surface2); box-shadow: none; cursor: not-allowed; }
+.ptt-btn.cooldown { background: linear-gradient(135deg, #f7971e, #ffd200); box-shadow: 0 8px 40px rgba(247,151,30,0.35); cursor: not-allowed; }
+.ptt-btn.banned   { background: var(--surface2); box-shadow: none; cursor: not-allowed; opacity: 0.5; }
+
+@keyframes ptt-pulse {
+  0%,100% { box-shadow: 0 8px 60px rgba(67,233,123,0.5); }
+  50%     { box-shadow: 0 8px 80px rgba(67,233,123,0.7); }
+}
+@keyframes ring-expand {
+  0%,100% { transform: scale(1); opacity: 1; }
+  50%     { transform: scale(1.06); opacity: 0.4; }
+}
+
+.waveform { display: flex; align-items: center; gap: 3px; height: 18px; }
+.waveform span { display: block; width: 3px; border-radius: 3px; animation: wv 0.7s ease-in-out infinite; }
+.waveform span:nth-child(1){height:5px;animation-delay:0s}
+.waveform span:nth-child(2){height:12px;animation-delay:0.1s}
+.waveform span:nth-child(3){height:18px;animation-delay:0.2s}
+.waveform span:nth-child(4){height:12px;animation-delay:0.3s}
+.waveform span:nth-child(5){height:5px;animation-delay:0.4s}
+@keyframes wv { 0%,100%{transform:scaleY(0.3)} 50%{transform:scaleY(1)} }
+
+.floating-emoji {
+  position: absolute; bottom: 0; font-size: 30px; pointer-events: none;
+  animation: floatUp 2.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+  will-change: transform, opacity;
+}
+@keyframes floatUp {
+  0%   { transform: translateY(0) scale(0.4); opacity: 0; }
+  12%  { transform: translateY(-24px) scale(1.3); opacity: 1; }
+  35%  { transform: translateY(-100px) scale(1); opacity: 1; }
+  70%  { transform: translateY(-220px) scale(0.9); opacity: 0.7; }
+  100% { transform: translateY(-340px) scale(0.6); opacity: 0; }
+}
+
+@keyframes shake {
+  0%,100% { transform: rotate(0); }
+  20%     { transform: rotate(-12deg) scale(1.15); }
+  40%     { transform: rotate(10deg) scale(1.1); }
+  60%     { transform: rotate(-7deg) scale(1.05); }
+  80%     { transform: rotate(5deg); }
+}
+
+@key
