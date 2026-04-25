@@ -5,6 +5,7 @@ export class WebRTCManager {
   private broadcastChannel: ReturnType<typeof supabase.channel> | null = null
   private mediaRecorder: MediaRecorder | null = null
   private stream: MediaStream | null = null
+  private chunks: Blob[] = []
 
   constructor(userId: string) {
     this.userId = userId
@@ -23,16 +24,11 @@ export class WebRTCManager {
         if (payload.payload.from === this.userId) return
         const bytes = Uint8Array.from(atob(payload.payload.data), c => c.charCodeAt(0))
         const mimeType = payload.payload.mimeType || 'audio/webm'
-
-        // Bruk AudioContext for å dekode og spille uansett nettleser
-        const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)()
-        audioCtx.decodeAudioData(bytes.buffer.slice(0), (decoded) => {
-          const source = audioCtx.createBufferSource()
-          source.buffer = decoded
-          source.connect(audioCtx.destination)
-          source.start(0)
-          source.onended = () => audioCtx.close()
-        }, () => audioCtx.close())
+        const blob = new Blob([bytes.buffer], { type: mimeType })
+        const url = URL.createObjectURL(blob)
+        const audio = new Audio(url)
+        audio.play().catch(() => {})
+        audio.onended = () => URL.revokeObjectURL(url)
       })
       .subscribe()
   }
@@ -41,6 +37,7 @@ export class WebRTCManager {
 
   async startMic(): Promise<boolean> {
     try {
+      this.chunks = []
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true },
         video: false
@@ -54,9 +51,22 @@ export class WebRTCManager {
 
       this.mediaRecorder = new MediaRecorder(this.stream, { mimeType })
 
-      this.mediaRecorder.ondataavailable = async (e) => {
-        if (e.data.size < 50) return
-        const buffer = await e.data.arrayBuffer()
+      this.mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) this.chunks.push(e.data)
+      }
+
+      // Når opptaket stopper, send hele lydfilen
+      this.mediaRecorder.onstop = async () => {
+        if (this.chunks.length === 0) return
+
+        const mimeUsed = this.mediaRecorder?.mimeType || mimeType
+        const blob = new Blob(this.chunks, { type: mimeUsed })
+        this.chunks = []
+
+        // Supabase Realtime har 1MB grense – sjekk størrelse
+        if (blob.size > 900000) return
+
+        const buffer = await blob.arrayBuffer()
         const bytes = new Uint8Array(buffer)
         let binary = ''
         bytes.forEach(b => { binary += String.fromCharCode(b) })
@@ -65,11 +75,11 @@ export class WebRTCManager {
         this.broadcastChannel?.send({
           type: 'broadcast',
           event: 'audio',
-          payload: { from: this.userId, data: base64, mimeType },
+          payload: { from: this.userId, data: base64, mimeType: mimeUsed },
         })
       }
 
-      this.mediaRecorder.start(1000)
+      this.mediaRecorder.start()
       return true
     } catch {
       return false
