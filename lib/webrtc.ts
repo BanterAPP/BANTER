@@ -1,152 +1,73 @@
 import { supabase } from './supabase'
 
-const ICE_SERVERS: RTCIceServer[] = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-]
-
-async function getIceServers(): Promise<RTCIceServer[]> {
-  try {
-    const domain = process.env.NEXT_PUBLIC_METERED_DOMAIN
-    const key = process.env.NEXT_PUBLIC_METERED_KEY
-    if (!domain || !key) return ICE_SERVERS
-    const res = await fetch(`https://${domain}/api/v1/turn/credentials?apiKey=${key}`)
-    const servers = await res.json()
-    return [...ICE_SERVERS, ...servers]
-  } catch {
-    return ICE_SERVERS
-  }
-}
-
-type OnStream = (peerId: string, stream: MediaStream) => void
-type OnLeave  = (peerId: string) => void
+type OnAudio = (blob: Blob) => void
 
 export class WebRTCManager {
   private userId: string
-  private peers  = new Map<string, RTCPeerConnection>()
+  private sub: ReturnType<typeof supabase.channel> | null = null
+  private mediaRecorder: MediaRecorder | null = null
   private stream: MediaStream | null = null
-  private sub:    ReturnType<typeof supabase.channel> | null = null
-  private onStream?: OnStream
-  private onLeave?:  OnLeave
-  private iceServers: RTCIceServer[] = ICE_SERVERS
+  private onAudioCallback?: OnAudio
 
   constructor(userId: string) {
     this.userId = userId
   }
 
-  onRemoteStream(cb: OnStream) { this.onStream = cb }
-  onPeerLeave(cb: OnLeave)    { this.onLeave  = cb }
+  onRemoteStream(_peerId: string, _stream: MediaStream) {}
+  onPeerLeave(_cb: (peerId: string) => void) {}
 
   async init() {
-    this.iceServers = await getIceServers()
-
+    // Lytt på lyd-chunks fra andre brukere
     this.sub = supabase
-      .channel(`signals:${this.userId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'signals',
-          filter: `to_user=eq.${this.userId}`,
-        },
-        (payload) => {
-          const { from_user, type, data } = payload.new as {
-            from_user: string
-            type: string
-            data: RTCSessionDescriptionInit | RTCIceCandidateInit
-          }
-          this.handleSignal(from_user, type, data)
-        }
-      )
+      .channel('audio-broadcast')
+      .on('broadcast', { event: 'audio' }, (payload) => {
+        if (payload.payload.from === this.userId) return
+        const audioData = payload.payload.data
+        const blob = new Blob([Uint8Array.from(atob(audioData), c => c.charCodeAt(0))], { type: 'audio/webm' })
+        const url = URL.createObjectURL(blob)
+        const audio = new Audio(url)
+        audio.play().catch(() => {})
+        setTimeout(() => URL.revokeObjectURL(url), 5000)
+      })
       .subscribe()
   }
 
-  private makePc(peerId: string): RTCPeerConnection {
-    if (this.peers.has(peerId)) return this.peers.get(peerId)!
-
-    const pc = new RTCPeerConnection({ iceServers: this.iceServers })
-    this.peers.set(peerId, pc)
-
-    pc.onicecandidate = (e) => {
-      if (e.candidate) this.signal(peerId, 'ice-candidate', e.candidate.toJSON())
-    }
-
-    pc.ontrack = (e) => {
-      this.onStream?.(peerId, e.streams[0])
-    }
-
-    pc.onconnectionstatechange = () => {
-      if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
-        this.removePeer(peerId)
-      }
-    }
-
-    if (this.stream) {
-      this.stream.getTracks().forEach(t => pc.addTrack(t, this.stream!))
-    }
-
-    return pc
-  }
-
-  async connectTo(peerId: string) {
-    if (this.peers.has(peerId)) return
-    const pc = this.makePc(peerId)
-    const offer = await pc.createOffer()
-    await pc.setLocalDescription(offer)
-    await this.signal(peerId, 'offer', offer)
-  }
-
-  private async handleSignal(
-    from: string,
-    type: string,
-    data: RTCSessionDescriptionInit | RTCIceCandidateInit
-  ) {
-    if (type === 'offer') {
-      const pc = this.makePc(from)
-      await pc.setRemoteDescription(new RTCSessionDescription(data as RTCSessionDescriptionInit))
-      const answer = await pc.createAnswer()
-      await pc.setLocalDescription(answer)
-      await this.signal(from, 'answer', answer)
-    } else if (type === 'answer') {
-      const pc = this.peers.get(from)
-      if (pc && pc.signalingState !== 'stable') {
-        await pc.setRemoteDescription(new RTCSessionDescription(data as RTCSessionDescriptionInit))
-      }
-    } else if (type === 'ice-candidate') {
-      const pc = this.peers.get(from)
-      if (pc?.remoteDescription) {
-        try { await pc.addIceCandidate(new RTCIceCandidate(data as RTCIceCandidateInit)) } catch {}
-      }
-    }
-
-    await supabase
-      .from('signals')
-      .delete()
-      .eq('from_user', from)
-      .eq('to_user', this.userId)
-      .eq('type', type)
-  }
-
-  private async signal(
-    to: string,
-    type: string,
-    data: RTCSessionDescriptionInit | RTCIceCandidateInit
-  ) {
-    await supabase.from('signals').insert({ from_user: this.userId, to_user: to, type, data })
+  async connectTo(_peerId: string) {
+    // Ikke nødvendig med broadcast-tilnærming
   }
 
   async startMic(): Promise<boolean> {
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
-      this.peers.forEach((pc) => {
-        const senders = pc.getSenders()
-        this.stream!.getTracks().forEach(track => {
-          const existing = senders.find(s => s.track?.kind === track.kind)
-          if (existing) existing.replaceTrack(track)
-          else          pc.addTrack(track, this.stream!)
-        })
+
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : 'audio/mp4'
+
+      this.mediaRecorder = new MediaRecorder(this.stream, {
+        mimeType,
+        audioBitsPerSecond: 32000,
       })
+
+      this.mediaRecorder.ondataavailable = async (e) => {
+        if (e.data.size === 0) return
+        // Konverter til base64 og send via Supabase Realtime
+        const buffer = await e.data.arrayBuffer()
+        const bytes = new Uint8Array(buffer)
+        let binary = ''
+        bytes.forEach(b => binary += String.fromCharCode(b))
+        const base64 = btoa(binary)
+
+        await supabase.channel('audio-broadcast').send({
+          type: 'broadcast',
+          event: 'audio',
+          payload: { from: this.userId, data: base64 },
+        })
+      }
+
+      this.mediaRecorder.start(200) // Send chunk hvert 200ms
       return true
     } catch {
       return false
@@ -154,27 +75,18 @@ export class WebRTCManager {
   }
 
   stopMic() {
+    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+      this.mediaRecorder.stop()
+    }
+    this.mediaRecorder = null
     this.stream?.getTracks().forEach(t => t.stop())
     this.stream = null
-    this.peers.forEach(pc => {
-      pc.getSenders().forEach(s => {
-        if (s.track?.kind === 'audio') pc.removeTrack(s)
-      })
-    })
   }
 
-  removePeer(peerId: string) {
-    const pc = this.peers.get(peerId)
-    if (!pc) return
-    pc.close()
-    this.peers.delete(peerId)
-    this.onLeave?.(peerId)
-  }
+  removePeer(_peerId: string) {}
 
   disconnectAll() {
     this.stopMic()
-    this.peers.forEach(pc => pc.close())
-    this.peers.clear()
     this.sub?.unsubscribe()
   }
 }
