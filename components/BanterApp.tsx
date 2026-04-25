@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { v4 as uuidv4 } from 'uuid'
 import { supabase } from '@/lib/supabase'
-import { getDistanceKm, RADIUS_OPTIONS } from '@/lib/geo'
+import { getDistanceKm } from '@/lib/geo'
 import { WebRTCManager } from '@/lib/webrtc'
 import {
   NearbyUser, ChannelState, AppState, ReactionEmoji,
@@ -23,6 +23,7 @@ const HEARTBEAT_MS = 4000
 export default function BanterApp({ nick }: { nick: string }) {
   const userId = useRef(uuidv4())
   const webrtc  = useRef<WebRTCManager | null>(null)
+  const audioElements = useRef<Map<string, HTMLAudioElement>>(new Map())
 
   const [radius, setRadius]           = useState(10)
   const [position, setPosition]       = useState<{ lat: number; lng: number } | null>(null)
@@ -58,11 +59,34 @@ export default function BanterApp({ nick }: { nick: string }) {
   // 1. Geolocation
   useEffect(() => {
     if (!navigator.geolocation) { setLocErr(true); return }
-    const id = navigator.geolocation.watchPosition(
-      pos => { setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude }); setLocErr(false) },
-      ()  => setLocErr(true),
-      { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
+
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude })
+        setLocErr(false)
+      },
+      () => {
+        navigator.geolocation.getCurrentPosition(
+          pos => {
+            setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude })
+            setLocErr(false)
+          },
+          () => setLocErr(true),
+          { enableHighAccuracy: false, maximumAge: 60000, timeout: 10000 }
+        )
+      },
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 8000 }
     )
+
+    const id = navigator.geolocation.watchPosition(
+      pos => {
+        setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude })
+        setLocErr(false)
+      },
+      () => {},
+      { enableHighAccuracy: false, maximumAge: 10000, timeout: 15000 }
+    )
+
     return () => navigator.geolocation.clearWatch(id)
   }, [])
 
@@ -86,18 +110,58 @@ export default function BanterApp({ nick }: { nick: string }) {
     }
   }, [position, nick])
 
-  // 3. WebRTC
+  // 3. WebRTC - med audio element tracking
   useEffect(() => {
     const mgr = new WebRTCManager(userId.current)
     webrtc.current = mgr
     mgr.init()
-    mgr.onRemoteStream((_peerId, stream) => {
+
+    mgr.onRemoteStream((peerId, stream) => {
+      // Fjern gammel audio element hvis den finnes
+      const existing = audioElements.current.get(peerId)
+      if (existing) {
+        existing.pause()
+        existing.srcObject = null
+      }
+
+      // Lag ny audio element
       const audio = new window.Audio()
       audio.srcObject = stream
       audio.autoplay = true
-      audio.play().catch(() => {})
+      audio.volume = 1.0
+      audioElements.current.set(peerId, audio)
+
+      // Forsøk å spille av - håndter autoplay-blokkering
+      audio.play().catch(() => {
+        // På mobil kreves brukerinteraksjon for autoplay
+        // Vi legger til en click-listener
+        const resume = () => {
+          audio.play().catch(() => {})
+          document.removeEventListener('click', resume)
+          document.removeEventListener('touchstart', resume)
+        }
+        document.addEventListener('click', resume)
+        document.addEventListener('touchstart', resume)
+      })
     })
-    return () => { mgr.disconnectAll() }
+
+    mgr.onPeerLeave((peerId) => {
+      const audio = audioElements.current.get(peerId)
+      if (audio) {
+        audio.pause()
+        audio.srcObject = null
+        audioElements.current.delete(peerId)
+      }
+    })
+
+    return () => {
+      mgr.disconnectAll()
+      audioElements.current.forEach(audio => {
+        audio.pause()
+        audio.srcObject = null
+      })
+      audioElements.current.clear()
+    }
   }, [])
 
   // 4. Nearby users
