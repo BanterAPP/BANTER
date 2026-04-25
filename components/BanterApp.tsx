@@ -23,7 +23,6 @@ const HEARTBEAT_MS = 4000
 export default function BanterApp({ nick }: { nick: string }) {
   const userId = useRef(uuidv4())
   const webrtc  = useRef<WebRTCManager | null>(null)
-  const audioElements = useRef<Map<string, HTMLAudioElement>>(new Map())
 
   const [radius, setRadius]           = useState(10)
   const [position, setPosition]       = useState<{ lat: number; lng: number } | null>(null)
@@ -59,34 +58,22 @@ export default function BanterApp({ nick }: { nick: string }) {
   // 1. Geolocation
   useEffect(() => {
     if (!navigator.geolocation) { setLocErr(true); return }
-
     navigator.geolocation.getCurrentPosition(
-      pos => {
-        setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude })
-        setLocErr(false)
-      },
+      pos => { setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude }); setLocErr(false) },
       () => {
         navigator.geolocation.getCurrentPosition(
-          pos => {
-            setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude })
-            setLocErr(false)
-          },
+          pos => { setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude }); setLocErr(false) },
           () => setLocErr(true),
           { enableHighAccuracy: false, maximumAge: 60000, timeout: 10000 }
         )
       },
       { enableHighAccuracy: true, maximumAge: 5000, timeout: 8000 }
     )
-
     const id = navigator.geolocation.watchPosition(
-      pos => {
-        setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude })
-        setLocErr(false)
-      },
+      pos => { setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude }); setLocErr(false) },
       () => {},
       { enableHighAccuracy: false, maximumAge: 10000, timeout: 15000 }
     )
-
     return () => navigator.geolocation.clearWatch(id)
   }, [])
 
@@ -110,58 +97,12 @@ export default function BanterApp({ nick }: { nick: string }) {
     }
   }, [position, nick])
 
-  // 3. WebRTC - med audio element tracking
+  // 3. WebRTC / Audio broadcast
   useEffect(() => {
     const mgr = new WebRTCManager(userId.current)
     webrtc.current = mgr
     mgr.init()
-
-    mgr.onRemoteStream((peerId, stream) => {
-      // Fjern gammel audio element hvis den finnes
-      const existing = audioElements.current.get(peerId)
-      if (existing) {
-        existing.pause()
-        existing.srcObject = null
-      }
-
-      // Lag ny audio element
-      const audio = new window.Audio()
-      audio.srcObject = stream
-      audio.autoplay = true
-      audio.volume = 1.0
-      audioElements.current.set(peerId, audio)
-
-      // Forsøk å spille av - håndter autoplay-blokkering
-      audio.play().catch(() => {
-        // På mobil kreves brukerinteraksjon for autoplay
-        // Vi legger til en click-listener
-        const resume = () => {
-          audio.play().catch(() => {})
-          document.removeEventListener('click', resume)
-          document.removeEventListener('touchstart', resume)
-        }
-        document.addEventListener('click', resume)
-        document.addEventListener('touchstart', resume)
-      })
-    })
-
-    mgr.onPeerLeave((peerId) => {
-      const audio = audioElements.current.get(peerId)
-      if (audio) {
-        audio.pause()
-        audio.srcObject = null
-        audioElements.current.delete(peerId)
-      }
-    })
-
-    return () => {
-      mgr.disconnectAll()
-      audioElements.current.forEach(audio => {
-        audio.pause()
-        audio.srcObject = null
-      })
-      audioElements.current.clear()
-    }
+    return () => { mgr.disconnectAll() }
   }, [])
 
   // 4. Nearby users
@@ -227,8 +168,7 @@ export default function BanterApp({ nick }: { nick: string }) {
   useEffect(() => {
     const checkBan = async () => {
       const { data } = await supabase
-        .from('bans')
-        .select('*')
+        .from('bans').select('*')
         .eq('banned_user', userId.current)
         .gt('banned_until', new Date().toISOString())
         .maybeSingle()
@@ -287,15 +227,12 @@ export default function BanterApp({ nick }: { nick: string }) {
     }
     if (!posRef.current) { showToast('Venter på GPS...'); return }
     if (isBanned) { showToast(`🚫 Du er utestengt${banUntil ? ` til ${banUntil.toLocaleTimeString('no')}` : ''}`); return }
-
     const ok = await webrtc.current?.startMic()
     if (!ok) { showToast('Mikrofon ikke tilgjengelig'); return }
-
     await claimChannel()
     setAppState('speaking')
     setThumbsCount(0)
     setSpeakPct(0)
-
     let elapsed = 0
     speakInterval.current = setInterval(() => {
       elapsed += 100
@@ -359,7 +296,6 @@ export default function BanterApp({ nick }: { nick: string }) {
     <div style={{ height:'100dvh', display:'flex', flexDirection:'column', background:'var(--bg)', overflow:'hidden', position:'relative' }}>
       <TopBar nick={nick} radius={radius} hasLocation={!!position} locationError={locationError} />
       <SpeakingBanner iAmSpeaking={iAmSpeaking} otherSpeaking={otherSpeaking} speakingNick={channel.speaking_nick} />
-
       {(appState === 'speaking' || appState === 'cooldown') && (
         <div style={{ height:3, background:'var(--surface2)', flexShrink:0, overflow:'hidden' }}>
           <div style={{
@@ -372,7 +308,6 @@ export default function BanterApp({ nick }: { nick: string }) {
           }} />
         </div>
       )}
-
       <UserList users={nearbyUsers} speakingUserId={channel.speaking_user} />
       <ReactionLayer reactions={reactions} />
       {otherSpeaking && (
