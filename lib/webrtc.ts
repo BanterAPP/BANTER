@@ -3,8 +3,20 @@ import { supabase } from './supabase'
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
 ]
+
+async function getIceServers(): Promise<RTCIceServer[]> {
+  try {
+    const domain = process.env.NEXT_PUBLIC_METERED_DOMAIN
+    const key = process.env.NEXT_PUBLIC_METERED_KEY
+    if (!domain || !key) return ICE_SERVERS
+    const res = await fetch(`https://${domain}/api/v1/turn/credentials?apiKey=${key}`)
+    const servers = await res.json()
+    return [...ICE_SERVERS, ...servers]
+  } catch {
+    return ICE_SERVERS
+  }
+}
 
 type OnStream = (peerId: string, stream: MediaStream) => void
 type OnLeave  = (peerId: string) => void
@@ -16,6 +28,7 @@ export class WebRTCManager {
   private sub:    ReturnType<typeof supabase.channel> | null = null
   private onStream?: OnStream
   private onLeave?:  OnLeave
+  private iceServers: RTCIceServer[] = ICE_SERVERS
 
   constructor(userId: string) {
     this.userId = userId
@@ -25,6 +38,8 @@ export class WebRTCManager {
   onPeerLeave(cb: OnLeave)    { this.onLeave  = cb }
 
   async init() {
+    this.iceServers = await getIceServers()
+
     this.sub = supabase
       .channel(`signals:${this.userId}`)
       .on(
@@ -50,7 +65,7 @@ export class WebRTCManager {
   private makePc(peerId: string): RTCPeerConnection {
     if (this.peers.has(peerId)) return this.peers.get(peerId)!
 
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
+    const pc = new RTCPeerConnection({ iceServers: this.iceServers })
     this.peers.set(peerId, pc)
 
     pc.onicecandidate = (e) => {
