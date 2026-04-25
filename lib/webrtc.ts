@@ -1,13 +1,13 @@
 import { supabase } from './supabase'
 
-type OnAudio = (blob: Blob) => void
-
 export class WebRTCManager {
   private userId: string
   private sub: ReturnType<typeof supabase.channel> | null = null
+  private broadcastChannel: ReturnType<typeof supabase.channel> | null = null
   private mediaRecorder: MediaRecorder | null = null
   private stream: MediaStream | null = null
-  private onAudioCallback?: OnAudio
+  private audioQueue: Blob[] = []
+  private isPlaying = false
 
   constructor(userId: string) {
     this.userId = userId
@@ -17,28 +17,58 @@ export class WebRTCManager {
   onPeerLeave(_cb: (peerId: string) => void) {}
 
   async init() {
-    // Lytt på lyd-chunks fra andre brukere
-    this.sub = supabase
-      .channel('audio-broadcast')
+    this.broadcastChannel = supabase.channel('audio-broadcast', {
+      config: { broadcast: { self: false } }
+    })
+
+    this.broadcastChannel
       .on('broadcast', { event: 'audio' }, (payload) => {
         if (payload.payload.from === this.userId) return
         const audioData = payload.payload.data
-        const blob = new Blob([Uint8Array.from(atob(audioData), c => c.charCodeAt(0))], { type: 'audio/webm' })
-        const url = URL.createObjectURL(blob)
-        const audio = new Audio(url)
-        audio.play().catch(() => {})
-        setTimeout(() => URL.revokeObjectURL(url), 5000)
+        const mimeType = payload.payload.mimeType || 'audio/webm'
+        const bytes = Uint8Array.from(atob(audioData), c => c.charCodeAt(0))
+        const blob = new Blob([bytes], { type: mimeType })
+        this.audioQueue.push(blob)
+        if (!this.isPlaying) this.playNext()
       })
       .subscribe()
   }
 
-  async connectTo(_peerId: string) {
-    // Ikke nødvendig med broadcast-tilnærming
+  private playNext() {
+    if (this.audioQueue.length === 0) {
+      this.isPlaying = false
+      return
+    }
+    this.isPlaying = true
+    const blob = this.audioQueue.shift()!
+    const url = URL.createObjectURL(blob)
+    const audio = new Audio(url)
+    audio.onended = () => {
+      URL.revokeObjectURL(url)
+      this.playNext()
+    }
+    audio.onerror = () => {
+      URL.revokeObjectURL(url)
+      this.playNext()
+    }
+    audio.play().catch(() => {
+      URL.revokeObjectURL(url)
+      this.playNext()
+    })
   }
+
+  async connectTo(_peerId: string) {}
 
   async startMic(): Promise<boolean> {
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          sampleRate: 16000,
+        },
+        video: false
+      })
 
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
@@ -48,26 +78,32 @@ export class WebRTCManager {
 
       this.mediaRecorder = new MediaRecorder(this.stream, {
         mimeType,
-        audioBitsPerSecond: 32000,
+        audioBitsPerSecond: 16000,
       })
 
       this.mediaRecorder.ondataavailable = async (e) => {
-        if (e.data.size === 0) return
-        // Konverter til base64 og send via Supabase Realtime
+        if (e.data.size < 100) return
         const buffer = await e.data.arrayBuffer()
         const bytes = new Uint8Array(buffer)
         let binary = ''
-        bytes.forEach(b => binary += String.fromCharCode(b))
+        const chunkSize = 8192
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
+        }
         const base64 = btoa(binary)
 
-        await supabase.channel('audio-broadcast').send({
+        this.broadcastChannel?.send({
           type: 'broadcast',
           event: 'audio',
-          payload: { from: this.userId, data: base64 },
+          payload: {
+            from: this.userId,
+            data: base64,
+            mimeType,
+          },
         })
       }
 
-      this.mediaRecorder.start(200) // Send chunk hvert 200ms
+      this.mediaRecorder.start(500)
       return true
     } catch {
       return false
@@ -87,6 +123,7 @@ export class WebRTCManager {
 
   disconnectAll() {
     this.stopMic()
+    this.broadcastChannel?.unsubscribe()
     this.sub?.unsubscribe()
   }
 }
