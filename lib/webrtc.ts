@@ -5,11 +5,8 @@ export class WebRTCManager {
   private broadcastChannel: ReturnType<typeof supabase.channel> | null = null
   private mediaRecorder: MediaRecorder | null = null
   private stream: MediaStream | null = null
-  private sourceBuffer: SourceBuffer | null = null
-  private mediaSource: MediaSource | null = null
-  private audioElement: HTMLAudioElement | null = null
-  private pendingChunks: ArrayBuffer[] = []
-  private isAppending = false
+  private audioQueue: { data: ArrayBuffer; mimeType: string }[] = []
+  private isPlaying = false
 
   constructor(userId: string) {
     this.userId = userId
@@ -19,8 +16,6 @@ export class WebRTCManager {
   onPeerLeave(_cb: (peerId: string) => void) {}
 
   async init() {
-    this.setupMediaSource()
-
     this.broadcastChannel = supabase.channel('audio-broadcast', {
       config: { broadcast: { self: false } }
     })
@@ -29,59 +24,28 @@ export class WebRTCManager {
       .on('broadcast', { event: 'audio' }, (payload) => {
         if (payload.payload.from === this.userId) return
         const bytes = Uint8Array.from(atob(payload.payload.data), c => c.charCodeAt(0))
-        this.appendChunk(bytes.buffer)
+        this.audioQueue.push({
+          data: bytes.buffer,
+          mimeType: payload.payload.mimeType || 'audio/webm'
+        })
+        if (!this.isPlaying) this.playNext()
       })
       .subscribe()
   }
 
-  private setupMediaSource() {
-    if (!window.MediaSource) return
-
-    this.mediaSource = new MediaSource()
-    this.audioElement = new Audio()
-    this.audioElement.src = URL.createObjectURL(this.mediaSource)
-    this.audioElement.autoplay = true
-
-    this.mediaSource.addEventListener('sourceopen', () => {
-      const mimeType = MediaSource.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : 'audio/webm'
-
-      try {
-        this.sourceBuffer = this.mediaSource!.addSourceBuffer(mimeType)
-        this.sourceBuffer.mode = 'sequence'
-        this.sourceBuffer.addEventListener('updateend', () => {
-          this.isAppending = false
-          this.processQueue()
-        })
-      } catch {
-        this.sourceBuffer = null
-      }
-    })
-
-    this.audioElement.play().catch(() => {
-      document.addEventListener('click', () => this.audioElement?.play().catch(() => {}), { once: true })
-      document.addEventListener('touchstart', () => this.audioElement?.play().catch(() => {}), { once: true })
-    })
-  }
-
-  private appendChunk(buffer: ArrayBuffer) {
-    this.pendingChunks.push(buffer)
-    this.processQueue()
-  }
-
-  private processQueue() {
-    if (this.isAppending) return
-    if (!this.sourceBuffer || this.sourceBuffer.updating) return
-    if (this.pendingChunks.length === 0) return
-
-    this.isAppending = true
-    const chunk = this.pendingChunks.shift()!
-    try {
-      this.sourceBuffer.appendBuffer(chunk)
-    } catch {
-      this.isAppending = false
+  private playNext() {
+    if (this.audioQueue.length === 0) {
+      this.isPlaying = false
+      return
     }
+    this.isPlaying = true
+    const { data, mimeType } = this.audioQueue.shift()!
+    const blob = new Blob([data], { type: mimeType })
+    const url = URL.createObjectURL(blob)
+    const audio = new Audio(url)
+    audio.onended = () => { URL.revokeObjectURL(url); this.playNext() }
+    audio.onerror = () => { URL.revokeObjectURL(url); this.playNext() }
+    audio.play().catch(() => { URL.revokeObjectURL(url); this.playNext() })
   }
 
   async connectTo(_peerId: string) {}
@@ -89,23 +53,21 @@ export class WebRTCManager {
   async startMic(): Promise<boolean> {
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-        },
+        audio: { echoCancellation: true, noiseSuppression: true },
         video: false
       })
 
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/webm')
-        ? 'audio/webm'
-        : 'audio/mp4'
+      // Safari bruker mp4, Android/Chrome bruker webm
+      const mimeType =
+        MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' :
+        MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' :
+        MediaRecorder.isTypeSupported('audio/mp4;codecs=mp4a') ? 'audio/mp4;codecs=mp4a' :
+        'audio/mp4'
 
       this.mediaRecorder = new MediaRecorder(this.stream, { mimeType })
 
       this.mediaRecorder.ondataavailable = async (e) => {
-        if (e.data.size < 100) return
+        if (e.data.size < 50) return
         const buffer = await e.data.arrayBuffer()
         const bytes = new Uint8Array(buffer)
         let binary = ''
@@ -119,7 +81,7 @@ export class WebRTCManager {
         })
       }
 
-      this.mediaRecorder.start(100)
+      this.mediaRecorder.start(300)
       return true
     } catch {
       return false
@@ -140,9 +102,5 @@ export class WebRTCManager {
   disconnectAll() {
     this.stopMic()
     this.broadcastChannel?.unsubscribe()
-    if (this.audioElement) {
-      this.audioElement.pause()
-      this.audioElement.src = ''
-    }
   }
 }
