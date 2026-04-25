@@ -5,8 +5,6 @@ export class WebRTCManager {
   private broadcastChannel: ReturnType<typeof supabase.channel> | null = null
   private mediaRecorder: MediaRecorder | null = null
   private stream: MediaStream | null = null
-  private audioQueue: { data: ArrayBuffer; mimeType: string }[] = []
-  private isPlaying = false
 
   constructor(userId: string) {
     this.userId = userId
@@ -24,28 +22,19 @@ export class WebRTCManager {
       .on('broadcast', { event: 'audio' }, (payload) => {
         if (payload.payload.from === this.userId) return
         const bytes = Uint8Array.from(atob(payload.payload.data), c => c.charCodeAt(0))
-        this.audioQueue.push({
-          data: bytes.buffer,
-          mimeType: payload.payload.mimeType || 'audio/webm'
-        })
-        if (!this.isPlaying) this.playNext()
+        const mimeType = payload.payload.mimeType || 'audio/webm'
+
+        // Bruk AudioContext for å dekode og spille uansett nettleser
+        const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)()
+        audioCtx.decodeAudioData(bytes.buffer.slice(0), (decoded) => {
+          const source = audioCtx.createBufferSource()
+          source.buffer = decoded
+          source.connect(audioCtx.destination)
+          source.start(0)
+          source.onended = () => audioCtx.close()
+        }, () => audioCtx.close())
       })
       .subscribe()
-  }
-
-  private playNext() {
-    if (this.audioQueue.length === 0) {
-      this.isPlaying = false
-      return
-    }
-    this.isPlaying = true
-    const { data, mimeType } = this.audioQueue.shift()!
-    const blob = new Blob([data], { type: mimeType })
-    const url = URL.createObjectURL(blob)
-    const audio = new Audio(url)
-    audio.onended = () => { URL.revokeObjectURL(url); this.playNext() }
-    audio.onerror = () => { URL.revokeObjectURL(url); this.playNext() }
-    audio.play().catch(() => { URL.revokeObjectURL(url); this.playNext() })
   }
 
   async connectTo(_peerId: string) {}
@@ -57,7 +46,6 @@ export class WebRTCManager {
         video: false
       })
 
-      // Safari bruker mp4, Android/Chrome bruker webm
       const mimeType =
         MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' :
         MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' :
@@ -81,7 +69,7 @@ export class WebRTCManager {
         })
       }
 
-      this.mediaRecorder.start(300)
+      this.mediaRecorder.start(1000)
       return true
     } catch {
       return false
